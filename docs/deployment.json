@@ -1,0 +1,101 @@
+{
+  "profile": "zettai-rpu-v0.2-qemu-x86_64",
+  "spec": {
+    "file": "Zettai_CXL_Bridge_Rust_Kernel_Spec_v0.2.docx",
+    "sha256": "b5341a7d1220661e924f39393a423f9c93c6688154e389578d632686a56a2c22"
+  },
+  "kernel": {
+    "path": "/root/linux",
+    "sha": "40368e0702bb2c56932e9d91e617a33d76f1c267",
+    "release": "7.0.0-mk3+",
+    "config_sha256": "b9ea3a3c582ccb8c8dfecd21cd00016ab5ae821e2fd76bcc8c2f540bbc78ea06",
+    "image_sha256": "d11ace64b6b7e23cc9a46bc8cf484fcce6f1e30178f25f3849ae995cc86a2c33",
+    "dirty": [
+      " M arch/x86/multikernel/spawn.c",
+      " M kernel/multikernel/Kconfig",
+      "?? include/linux/autoconf.h",
+      "?? include/linux/utsrelease.h",
+      "?? include/linux/version.h"
+    ]
+  },
+  "toolchain": {
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11) (built from a source tarball)",
+    "clang": "Ubuntu clang version 21.1.8 (6ubuntu1)",
+    "bindgen": "bindgen 0.72.1"
+  },
+  "qemu": {
+    "path": "/root/CXLMemSim/lib/qemu",
+    "base_sha": "f0b2b3d518bb4d9b917da4a6dde312be304408fc",
+    "version": "10.0.94",
+    "repository": "https://github.com/Zettai-US/qemu-cxl-type2",
+    "branch": "codex/zettbridge-rust-v0.2",
+    "commit": "76716786b7926c8fd0922018094699d9b842de8f"
+  },
+  "hardware": {
+    "vendor": "1b36",
+    "provider_device": "10f0",
+    "consumer_device": "10f1",
+    "bar": 0,
+    "bar_bytes": 16384,
+    "standard_cxl": "separate cxl-type3 device",
+    "HDM": "configurable non-interleaved volatile region; validated 256 MiB and 8 GiB",
+    "backend": "kernel-owned DRAM pages on node 0; translated Intel IOMMU; ATS disabled",
+    "mapping": "x86 UC PFNMAP, exclusive DAX driver, 4-KiB leases",
+    "no_payload_cache": true,
+    "dma_bits": 64,
+    "max_dma_segment_bytes": 2097152,
+    "max_extents": 65536
+  },
+  "limits": {
+    "lease_alignment": 4096,
+    "max_active_leases": 128,
+    "max_retained_transactions": 256,
+    "transaction_timeout_ms": 2000,
+    "ipc_timeout_ms": 2000,
+    "worker_interval_ms": 100,
+    "report_interval_ms": 200,
+    "usage_expiry_ms": 2000,
+    "query_retries": 3,
+    "default_export_bytes": 268435456,
+    "max_configured_export_bytes": 68719476736,
+    "max_lease_bytes": 4294967296,
+    "large_pool_ipc_timeout_ms": 30000
+  },
+  "emulation_only": true,
+  "driver": {
+    "implementation": "native Rust OOT",
+    "kernel_patch_required": false,
+    "native_apis": [
+      "pci::Driver",
+      "pci::Adapter",
+      "MiscDevice",
+      "Arc",
+      "Mutex",
+      "DelayedWork",
+      "Completion",
+      "UserSlice",
+      "CoherentAllocation",
+      "SGTable"
+    ],
+    "c_boundary": "stateless inline/macro wrappers, private DAX descriptors, AER/PM forwarding and sysfs declarations",
+    "module_sha256": "3e630f6c8c577ffad430156533fa38cec081ed26f2b1b3ae56a7a6504e25b2e1",
+    "previous_validation_runs": [
+      "rust-final-normal",
+      "rust-final-ack",
+      "rust-final-quarantine",
+      "rust-final-lifetime"
+    ],
+    "validation_runs": [
+      "memory8g-test",
+      "live-control-test",
+      "live-8g"
+    ]
+  },
+  "live_configuration": {
+    "path": "/root/zettbridge/artifacts/live-8g",
+    "export_bytes": 8589934592,
+    "provider_ram_bytes": 12884901888,
+    "consumer_ram_bytes": 4294967296,
+    "heartbeat_lease_bytes": 134217728
+  }
+}
