@@ -38,18 +38,20 @@ def qmp(out, role, operation):
 def snapshot(out, role):
     node = "rpu0" if role == "provider" else "consumer0"
     fields = ["state", "usage_valid", "usage_age_ns", "ats_status", "ats_enabled",
-              "ats_transitions", "ats_faults", "dram/allocated_bytes",
+              "ats_transitions", "ats_faults", "ats_requests", "ats_hits",
+              "ats_invalidations", "ats_cached_entries", "dram/allocated_bytes",
               "dram/quarantined_bytes", "dram/quarantined_backing_bytes"]
     script = (f"cd /sys/class/rpu/{node}; for f in " + " ".join(fields) +
-              '; do printf "%s=" "$f"; cat "$f"; done; zbctl ' + role + "-stats")
+              '; do v=$(cat "$f"); printf "%s=%s\\n" "$f" "$v"; done; '
+              'v=$(zbctl ' + role + '-stats); printf "__ZB_STATS__%s\\n" "$v"')
     result = command(out, role, script).replace("\r", "")
     values = dict(re.findall(r"^([a-z_/]+)=([^\n]+)$", result, re.M))
     for line in result.splitlines():
-        if line.startswith("state=") and "flags=" in line:
-            values["stats"] = dict(item.split("=") for item in line.split())
-    # The GET_STATS line also starts 'state='; keep the actual sysfs state.
+        if line.startswith("__ZB_STATS__state="):
+            values["stats"] = dict(item.split("=") for item in line.removeprefix("__ZB_STATS__").split())
     values["state"] = re.search(r"^state=([a-z]+)$", result, re.M)[1]
     assert set(fields) <= values.keys(), result
+    assert all(re.fullmatch(r"[0-9]+|unknown", values[field]) for field in fields if field != "state"), result
     return values
 
 

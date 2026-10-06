@@ -35,12 +35,18 @@ def main():
     parser.add_argument("--consumer-memory", type=memory_size, default=2 * GIB)
     parser.add_argument("--keep-running", action="store_true",
                         help="leave the pool active, with serial console and QMP sockets")
+    parser.add_argument("--consumer-disk", type=pathlib.Path,
+                        help="attach a read-only raw workload disk to the consumer")
     parser.add_argument("--drop-commit-ack", action="store_true")
     parser.add_argument("--drop-ats-test-ack", action="store_true",
                         help="exercise completion loss for the temporary ATS test buffer")
     parser.add_argument("--query-unknown", action="store_true")
     parser.add_argument("--lifetime", action="store_true")
     args = parser.parse_args()
+    if args.consumer_disk:
+        args.consumer_disk = args.consumer_disk.resolve()
+        if not args.consumer_disk.is_file() or "," in str(args.consumer_disk):
+            parser.error("--consumer-disk must name a regular file without commas")
     if not 256 * MIB <= args.capacity <= 64 * GIB or args.capacity & (args.capacity - 1):
         parser.error("--capacity must be a power of two from 256M through 64G")
     if args.drop_commit_ack and args.drop_ats_test_ack:
@@ -81,6 +87,7 @@ def main():
         "provider_ram_bytes": provider_ram, "consumer_ram_bytes": args.consumer_memory,
         "keep_running": args.keep_running, "status": "starting",
         "ats": args.ats,
+        "consumer_disk": str(args.consumer_disk) if args.consumer_disk else None,
         "kernel_sha": subprocess.check_output(["git", "-C", args.kernel, "rev-parse", "HEAD"], text=True).strip(),
         "kernel_release": (pathlib.Path(args.kernel) / "include/config/kernel.release").read_text().strip(),
         "driver_implementation": "native Rust OOT with stateless kernel helpers",
@@ -127,6 +134,9 @@ def main():
                 "-pidfile", str(out / (role + ".pid")),
             ]
             if role == "consumer":
+                if args.consumer_disk:
+                    cmd += ["-drive", f"file={args.consumer_disk},if=none,format=raw,readonly=on,id=workload",
+                            "-device", "virtio-blk-pci,drive=workload"]
                 cmd += ["-device", "pxb-cxl,id=cxl.1,bus=pcie.0,bus_nr=52",
                         "-device", "cxl-rp,id=cxl_rp,bus=cxl.1,port=0,chassis=2,slot=0",
                         "-object", f"memory-backend-ram,id=cxl-advertised,size={args.capacity}",
@@ -161,8 +171,12 @@ def main():
             if any(proc.poll() is not None for proc in processes):
                 raise RuntimeError("QEMU exited before readiness; see serial and .qemu.log files")
             if args.keep_running:
-                if ("PROVIDER READY" in logs[0] and "CONSUMER APERTURE_SPAN_PASS" in logs[1]
-                        and "CONSUMER HEARTBEAT seq=1" in logs[1]):
+                # printk can interrupt a userspace serial write mid-marker.
+                # Retain raw logs for fault checks; strip only timestamped
+                # kernel records when reconstructing userspace readiness.
+                ready = [re.sub(r"\[\s*\d+\.\d+\][^\n]*\n", "", log) for log in logs]
+                if ("PROVIDER READY" in ready[0] and "CONSUMER APERTURE_SPAN_PASS" in ready[1]
+                        and "CONSUMER HEARTBEAT seq=1" in ready[1]):
                     leave_running = True
                     manifest["status"] = "running"
                     print(f"PAIR RUNNING capacity={args.capacity} pids={manifest['pids']} {out}")

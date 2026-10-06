@@ -107,6 +107,8 @@ ATS 持续开启扩展、翻译缓存/失效语义和 sysfs 诊断见 [docs/ats.
 
 ATS、复位、断连、用量过期以及并发 VMA 回收的边界修复、复现命令和结果见 [docs/edge-cases.md](docs/edge-cases.md)。`make test` 包含生产 consumer/recovery 策略的确定性竞态测试；`python3 tools/edge_pair.py --output /tmp/zettbridge-edge-new` 创建专用双 VM 完成真实 mmap 和故障隔离验证。
 
+llama.cpp 多轮工具调用及推理期间 KV 直接驻留 Host B 共享池的实现、构建和双 VM 验收见 [docs/llama-agent.md](docs/llama-agent.md)。`tools/build_llama_agent.py` 固定源码/模型并运行 attention 参考测试，`tools/run_llama_agent.py` 验证全部 KV 的 lease 地址、逐 token/logits 指纹一致性、Host B 用量和持续 ATS。
+
 已验证的是 **x86-64、256 MiB / 8 GiB 静态 volatile aperture、单路 HDM、Host B DRAM、UC managed pool 的双 QEMU 功能实现**。Rust 与 QEMU 均实际编译，两个 guest 实际启动。验证记录见 [docs/validation.md](docs/validation.md)，原始日志在 `artifacts/`。
 
 该模型不模拟 FPGA credit、链路延迟、dirty WB cache、真实 PCIe posted-write 队列或 RTL。QEMU 同步 DMA 完成是本 profile 的 drain 证据，不能据此宣布真实 FPGA 的 K0–K6 验收完成。应用映射固定 UC；不允许 devdax/普通 malloc 用量冒充 lease 用量。CXL System RAM tier 具有严格 NUMA/资源来源检查和编码路径，但没有在此次双 VM 测试中作为 Host B backing 验证；不能视作已通过 K2。
