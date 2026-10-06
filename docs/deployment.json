@@ -9,14 +9,15 @@
     "sha": "40368e0702bb2c56932e9d91e617a33d76f1c267",
     "release": "7.0.0-mk3+",
     "config_sha256": "b9ea3a3c582ccb8c8dfecd21cd00016ab5ae821e2fd76bcc8c2f540bbc78ea06",
-    "image_sha256": "d11ace64b6b7e23cc9a46bc8cf484fcce6f1e30178f25f3849ae995cc86a2c33",
+    "image_sha256": "c260c73179bb02963c2dab452e44eaa7927fdf44253d7856c5114c6d60a2a1ef",
     "dirty": [
       " M arch/x86/multikernel/spawn.c",
       " M kernel/multikernel/Kconfig",
       "?? include/linux/autoconf.h",
       "?? include/linux/utsrelease.h",
       "?? include/linux/version.h"
-    ]
+    ],
+    "previous_image_sha256": "d11ace64b6b7e23cc9a46bc8cf484fcce6f1e30178f25f3849ae995cc86a2c33"
   },
   "toolchain": {
     "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11) (built from a source tarball)",
