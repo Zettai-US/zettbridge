@@ -86,6 +86,12 @@ pub(crate) fn render(
         }
     }
     let mut b = Buffer { bytes: out, len: 0 };
+    // A disconnected peer returns the MMIO all-ones sentinel. In particular,
+    // its enable bit is not evidence that the provider still has ATS enabled.
+    if tier < 0 && (6..=14).contains(&field) && ats[0] == u64::MAX {
+        let _ = b.write_str("unknown\n");
+        return b.len;
+    }
     let value = if tier >= 0 {
         if !(0..13).contains(&field) || s.valid & (1u64 << field) == 0 {
             let _ = b.write_str("unknown\n");

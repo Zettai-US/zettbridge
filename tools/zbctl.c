@@ -22,11 +22,12 @@ static uint64_t pool_bytes;
 static bool live;
 static bool ats_required;
 static bool ats_test_quarantine;
+static const char *ats_node = "rpu0";
 static void die(const char *s);
 
 static uint64_t ats_field(const char *field) {
   char path[160];
-  snprintf(path, sizeof(path), "/sys/class/rpu/rpu0/ats_%s", field);
+  snprintf(path, sizeof(path), "/sys/class/rpu/%s/ats_%s", ats_node, field);
   FILE *file = fopen(path, "r");
   if (!file)
     die("ATS sysfs");
@@ -60,16 +61,19 @@ static void verify_ats(bool retired) {
   }
   check(ats_field("status") == 7 && ats_field("enabled") == 1,
         "provider ATS remains enabled with invalidation notifier");
-  check(ats_field("transitions") == 1, "ATS never toggled during mapping lifetime");
+  check(ats_field("transitions") == 1,
+        "ATS never toggled during mapping lifetime");
   check(ats_field("requests") && ats_field("hits") &&
             ats_field("invalidations") >= 2 && !ats_field("faults"),
         "ATS translation, cache hit and Linux invalidation counters");
-  check(!retired || !ats_field("cached_entries"), "retire leaves no cached translation");
+  check(!retired || !ats_field("cached_entries"),
+        "retire leaves no cached translation");
   printf("ATS_CONTINUOUS_PASS status=%" PRIu64 " requests=%" PRIu64
          " hits=%" PRIu64 " invalidations=%" PRIu64 " entries=%" PRIu64
-         " transitions=%" PRIu64 " retired=%d\n", ats_field("status"),
-         ats_field("requests"), ats_field("hits"), ats_field("invalidations"),
-         ats_field("cached_entries"), ats_field("transitions"), retired);
+         " transitions=%" PRIu64 " retired=%d\n",
+         ats_field("status"), ats_field("requests"), ats_field("hits"),
+         ats_field("invalidations"), ats_field("cached_entries"),
+         ats_field("transitions"), retired);
   fflush(stdout);
 }
 static void call(int fd, unsigned long op, void *r) {
@@ -233,6 +237,87 @@ static void *stress(void *arg) {
     call(a->fd, ZB_IOC_RELEASE, &r);
   }
   return NULL;
+}
+
+static void wait_release(int fd, uint64_t id) {
+  for (unsigned i = 0; i < 500; i++) {
+    struct zb_request query = req(id, 0, 0);
+    call(fd, ZB_IOC_QUERY_TXN, &query);
+    if (!query.status)
+      return;
+    usleep(10000);
+  }
+  check(false, "release completion timeout");
+}
+
+/* Compete with the unlocked VMA zap using real PFN faults and RELEASE ioctls.
+ * Keep each old VMA after completion AND a replacement allocation. A child
+ * must get SIGBUS, never a PFN belonging to a subsequently allocated lease. */
+static void *mapped_stress(void *arg) {
+  struct stress_arg *a = arg;
+  for (unsigned i = 0; i < 32; i++) {
+    int fd = open("/dev/rpu_consumer0", O_RDWR);
+    check(fd >= 0, "mapped stress owner");
+    struct zb_request r = req(1, a->epoch, 0);
+    r.bytes = 4096;
+    r.alignment = 4096;
+    call(fd, ZB_IOC_ALLOC, &r);
+    uint64_t handle = r.object_handle;
+    volatile uint8_t *old = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED,
+                                 fd, (off_t)handle << 32);
+    check(old != MAP_FAILED, "stress mmap");
+    check(old[0] == 0, "stress zero on reuse");
+    // Other threads trigger zaps throughout this interval; an active lease
+    // must be allowed to fault again until its own RELEASE is accepted.
+    for (unsigned n = 0; n < 16; n++) {
+      old[(n * 257) & 4095] = (uint8_t)(a->thread + 1);
+      usleep(137 + a->thread * 71);
+    }
+    r = req(2, a->epoch, handle);
+    call(fd, ZB_IOC_RELEASE, &r);
+    wait_release(fd, 2);
+    r = req(3, a->epoch, 0);
+    r.bytes = r.alignment = 4096;
+    call(fd, ZB_IOC_ALLOC, &r);
+    uint64_t replacement = r.object_handle;
+    pid_t child = fork();
+    check(child >= 0, "stress fork");
+    if (!child) {
+      volatile uint8_t value = old[0];
+      (void)value;
+      _exit(3);
+    }
+    int status;
+    check(waitpid(child, &status, 0) == child, "stress wait child");
+    check(WIFSIGNALED(status) && WTERMSIG(status) == SIGBUS,
+          "completed release must revoke every inherited mapping");
+    check(munmap((void *)old, 4096) == 0, "stress munmap");
+    r = req(4, a->epoch, replacement);
+    call(fd, ZB_IOC_RELEASE, &r);
+    wait_release(fd, 4);
+    close(fd);
+  }
+  return NULL;
+}
+
+static void mapped_edge_test(int fd) {
+  struct stress_arg args[4];
+  pthread_t threads[4];
+  struct zb_stats before = stats(fd);
+  check(before.provider_state == 3, "edge test active pool");
+  for (unsigned i = 0; i < 4; i++) {
+    args[i] = (struct stress_arg){fd, before.epoch, i};
+    check(pthread_create(&threads[i], NULL, mapped_stress, &args[i]) == 0,
+          "mapped stress thread");
+  }
+  for (unsigned i = 0; i < 4; i++)
+    check(pthread_join(threads[i], NULL) == 0, "mapped stress join");
+  struct zb_stats after = stats(fd);
+  check(after.allocated == before.allocated && !after.releasing &&
+            !after.quarantined,
+        "mapped stress has no leaked lease or quarantine");
+  verify_ats(false);
+  puts("CONSUMER MAPPED_REVOKE_EDGE_PASS cycles=128 threads=4");
 }
 /* Cover the entire advertised DPA range, including >4-GiB addresses and the
  * last eight bytes. All windows stay mapped until the verification pass, so
@@ -509,11 +594,11 @@ static void lifetime(int fd, bool prov) {
 }
 int main(int argc, char **argv) {
   if (argc != 2) {
-    fprintf(
-        stderr,
-        "usage: zbctl "
-        "provider-test|consumer-test|provider-serve|consumer-serve|\n"
-        "provider-lifetime|consumer-lifetime|provider-stats|consumer-stats\n");
+    fprintf(stderr,
+            "usage: zbctl "
+            "provider-test|consumer-test|provider-serve|consumer-serve|\n"
+            "provider-lifetime|consumer-lifetime|provider-stats|consumer-stats|"
+            "consumer-edge-test\n");
     return 2;
   }
   live = strstr(argv[1], "serve") != NULL;
@@ -526,6 +611,7 @@ int main(int argc, char **argv) {
     fclose(cmdline);
   }
   bool prov = !strncmp(argv[1], "provider", 8);
+  ats_node = prov ? "rpu0" : "consumer0";
   int fd = open(prov ? "/dev/rpu_provider0" : "/dev/rpu_consumer0", O_RDWR);
   if (fd < 0)
     die("open");
@@ -537,7 +623,9 @@ int main(int argc, char **argv) {
     lifetime(fd, prov);
     return 0;
   }
-  if (strstr(argv[1], "stats"))
+  if (!strcmp(argv[1], "consumer-edge-test"))
+    mapped_edge_test(fd);
+  else if (strstr(argv[1], "stats"))
     show(stats(fd));
   else if (prov)
     provider(fd, strstr(argv[1], "quarantine") != NULL);

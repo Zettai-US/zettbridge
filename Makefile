@@ -9,5 +9,7 @@ clean:
 test:
 	rustc --edition=2021 --test tests/core.rs -o /tmp/zettbridge-core-tests
 	/tmp/zettbridge-core-tests
+	rustc --edition=2021 --test tests/consumer.rs -o /tmp/zettbridge-consumer-tests
+	/tmp/zettbridge-consumer-tests
 tools:
 	$(CC) -std=gnu11 -O2 -Wall -Wextra -Werror -pthread -static -Iinclude tools/zbctl.c -o tools/zbctl

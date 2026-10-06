@@ -135,7 +135,8 @@ impl State {
         self.seq = self.seq.saturating_add(1);
         result
     }
-    fn tick(&mut self, revoked: bool) -> i32 {
+    // Some(frozen) records whether ALL new faults were blocked before the zap.
+    fn tick(&mut self, revoked: Option<bool>) -> i32 {
         // Both functions expose Host B's ATS counters; sysfs reads this cached
         // snapshot without issuing MMIO. Once selected, ATS is mandatory for
         // the provider's complete mapping lifetime, including reclamation.
@@ -146,7 +147,7 @@ impl State {
             self.fault();
         }
         if self.state == 6 {
-            if revoked {
+            if revoked == Some(true) {
                 self.revoke_pending = false;
             }
             return i32::from(self.revoke_pending);

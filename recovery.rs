@@ -2,6 +2,9 @@
 use crate::State;
 impl State {
     pub(crate) fn fault(&mut self) {
+        if self.state == 6 {
+            return;
+        }
         self.state = 6;
         self.frozen = true;
         self.revoke_pending = !self.provider && self.pool_size != 0;

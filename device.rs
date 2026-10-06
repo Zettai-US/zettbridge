@@ -73,13 +73,18 @@ impl WorkItem for Core {
                 this.done.complete_all();
                 return;
             }
-            s.tick(false) > 0
+            if s.tick(None) > 0 {
+                s.ledger.begin_revoke();
+                Some(s.frozen)
+            } else {
+                None
+            }
         };
-        if revoke {
+        if let Some(frozen) = revoke {
             this.revoke();
             let mut s = this.state.lock();
             if s.online {
-                s.tick(true);
+                s.tick(Some(frozen));
             }
         }
         // Always queue the next execution. Unbind may set online=false between

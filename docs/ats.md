@@ -46,6 +46,8 @@ Host A 在 ACTIVE 状态下约每 200 ms 发布完整 lease 用量，经自定�
 
 Rust 每约 100 ms 缓存这些诊断数据；sysfs show 不做 MMIO。这些诊断字段是逐项采样，不构成跨 Host 原子快照；原有 256-byte GET_STATS ABI 不变。
 
+peer 不可达、MMIO 返回全 1 时，ATS 诊断显示 `unknown`，包括 `ats_enabled`。不支持的 IOMMU ATS notifier 配置只使设备进入 FAULT，不终止 QEMU。复位和断连、报告过期以及并发回收的验证见 [edge-cases.md](edge-cases.md)。
+
 ## 验证
 
 ```sh

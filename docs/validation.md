@@ -4,6 +4,8 @@
 
 原始日志、initramfs、模块二进制和运行时 PID/socket 保存在执行机器的 `artifacts/`，不随源码提交。本文记录已执行的结果；复现命令见 README，各次启动还会生成完整命令及二进制哈希的 `run.json`。
 
+最新边界测试和竞态修复见 [edge-cases.md](edge-cases.md)：12 项 Rust 测试、13 项新 qtest、4 线程 128 轮真实 mmap 回收、用量过期/恢复、两端断连隔离、8 GiB 及 ATS-off 回归均已通过。常驻 8 GiB pair 保持运行，未在线替换其二进制。
+
 ## ATS 持续开启（2026-10-06）
 
 在下述 ATS 关闭基线上新增真实 ATS 请求、256 项设备翻译缓存、VT-d queued device invalidation、权限检查、RETIRE 清缓存和 Rust 状态监测。未修改目标内核。复现及运行接口见 [ats.md](ats.md)。

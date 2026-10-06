@@ -9,6 +9,7 @@ pub(crate) struct Lease {
     pub requested: u64,
     pub state: u32,
     pub mapped: bool,
+    pub revoking: bool,
 }
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(crate) struct Counters {
@@ -101,6 +102,7 @@ impl Ledger {
             requested,
             state: 1,
             mapped: false,
+            revoking: false,
         };
         self.next_handle += 1;
         self.leases[slot] = l;
@@ -121,5 +123,21 @@ impl Ledger {
             return Err(-16);
         }
         Ok(())
+    }
+    /// Snapshot the releasing set while the State mutex still excludes faults.
+    pub(crate) fn begin_revoke(&mut self) {
+        for l in &mut self.leases {
+            l.revoking = l.state == 2;
+        }
+    }
+    /// Only this batch has a VMA zap + hardware barrier completion proof.
+    pub(crate) fn finish_revoke(&mut self) -> impl Iterator<Item = Lease> + '_ {
+        self.leases.iter_mut().filter_map(|l| {
+            if l.state == 2 && l.revoking {
+                Some(core::mem::take(l))
+            } else {
+                None
+            }
+        })
     }
 }

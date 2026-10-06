@@ -46,7 +46,7 @@ impl State {
             _ => Err(-25),
         }
     }
-    pub(crate) fn consumer_tick(&mut self, revoked: bool) -> i32 {
+    pub(crate) fn consumer_tick(&mut self, revoked: Option<bool>) -> i32 {
         if self.pool_size == 0 {
             return 0;
         }
@@ -99,11 +99,16 @@ impl State {
             }
         }
         let pending = self.ledger.leases.iter().any(|l| l.state == 2);
-        if (pending || self.state == 4) && !revoked {
+        if (pending || self.state == 4) && revoked.is_none() {
             return 1;
         }
-        if revoked {
+        if revoked.is_some() {
             if self.state == 4 {
+                // A global revoke discovered AFTER a local zap needs a new
+                // pass: active leases could have faulted during that zap.
+                if revoked != Some(true) {
+                    return 1;
+                }
                 // The Rust worker has zapped every VMA with synchronous TLB invalidation.
                 // All mappings are UC: there are no dirty WB cache lines.
                 if self.command(self.epoch, 0x101).is_err() {
@@ -121,18 +126,12 @@ impl State {
                 self.fault();
                 return 0;
             }
-            for l in &mut self.ledger.leases {
-                if l.state == 2 {
-                    for t in &mut self.txns[..self.txn_count] {
-                        if t.nr == 8
-                            && t.owner == l.owner
-                            && t.input.handle == l.handle
-                            && t.error == 0
-                        {
-                            t.output.status = 0;
-                        }
+            for l in self.ledger.finish_revoke() {
+                for t in &mut self.txns[..self.txn_count] {
+                    if t.nr == 8 && t.owner == l.owner && t.input.handle == l.handle && t.error == 0
+                    {
+                        t.output.status = 0;
                     }
-                    *l = Lease::default();
                 }
             }
             self.seq += 1;

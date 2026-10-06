@@ -16,7 +16,7 @@ standard CXL Type 3 / HDM               Port B PCI requester / vIOMMU
               QEMU-to-QEMU Unix SEQPACKET
 ```
 
-驱动仓库：[Zettai-US/zettbridge](https://github.com/Zettai-US/zettbridge)。配套 QEMU 位于 [Zettai-US/qemu-cxl-type2](https://github.com/Zettai-US/qemu-cxl-type2/tree/codex/zettbridge-rust-v0.2)，本次源码提交为 `616434b01cd6490c46167e1b8c1bc5a23d59bdb1`。`CXLMemSim` 的配套分支会固定该子模块版本；首次拉取后执行 `git submodule update --init lib/qemu`。
+驱动仓库：[Zettai-US/zettbridge](https://github.com/Zettai-US/zettbridge)。配套 QEMU 位于 [Zettai-US/qemu-cxl-type2](https://github.com/Zettai-US/qemu-cxl-type2/tree/codex/zettbridge-rust-v0.2)，本次源码提交为 `6930204cef056c72c99566c2bd91a279dc50a076`。`CXLMemSim` 的配套分支会固定该子模块版本；首次拉取后执行 `git submodule update --init lib/qemu`。
 
 ## 构建与一键验证
 
@@ -104,6 +104,8 @@ python3 tools/run_pair.py --lifetime --output /tmp/zettbridge-lifetime
 ## 当前交付范围
 
 ATS 持续开启扩展、翻译缓存/失效语义和 sysfs 诊断见 [docs/ats.md](docs/ats.md)。启动脚本默认 `--ats on`；用量仍每约 200 ms 上报，ATS 在分配、读写和最终回收期间保持开启。
+
+ATS、复位、断连、用量过期以及并发 VMA 回收的边界修复、复现命令和结果见 [docs/edge-cases.md](docs/edge-cases.md)。`make test` 包含生产 consumer/recovery 策略的确定性竞态测试；`python3 tools/edge_pair.py --output /tmp/zettbridge-edge-new` 创建专用双 VM 完成真实 mmap 和故障隔离验证。
 
 已验证的是 **x86-64、256 MiB / 8 GiB 静态 volatile aperture、单路 HDM、Host B DRAM、UC managed pool 的双 QEMU 功能实现**。Rust 与 QEMU 均实际编译，两个 guest 实际启动。验证记录见 [docs/validation.md](docs/validation.md)，原始日志在 `artifacts/`。
 

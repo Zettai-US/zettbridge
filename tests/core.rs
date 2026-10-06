@@ -93,3 +93,60 @@ fn large_pool_and_mmap_handle_bounds() {
     assert_eq!(high.start + high.bytes, 8 << 30);
     assert_eq!(l.counters().unwrap().available(), Some(0));
 }
+
+#[test]
+fn release_arriving_during_vma_zap_waits_for_next_batch() {
+    let mut ledger = Ledger::new();
+    ledger.capacity = 8192;
+    let a = ledger.alloc(1, 4096, 4096).unwrap();
+    let b = ledger.alloc(2, 4096, 4096).unwrap();
+    ledger.release(1, a.handle).unwrap();
+    ledger.begin_revoke();
+    // Worker drops State lock to zap VMAs. B may fault again and then RELEASE.
+    ledger.get_mut(2, b.handle).unwrap().mapped = true;
+    ledger.release(2, b.handle).unwrap();
+    let completed: Vec<_> = ledger.finish_revoke().map(|l| l.handle).collect();
+    assert_eq!(completed, [a.handle]);
+    assert_eq!(ledger.counters().unwrap().releasing, 4096);
+    let c = ledger.alloc(3, 4096, 4096).unwrap();
+    assert_eq!(c.start, a.start);
+    assert!(ledger.alloc(4, 4096, 4096).is_err());
+    ledger.begin_revoke();
+    assert_eq!(ledger.finish_revoke().next().unwrap().handle, b.handle);
+    assert_eq!(ledger.alloc(4, 4096, 4096).unwrap().start, b.start);
+}
+
+#[test]
+fn fault_during_revoke_never_reclaims_quarantine() {
+    let mut ledger = Ledger::new();
+    ledger.capacity = 4096;
+    let a = ledger.alloc(1, 4096, 4096).unwrap();
+    ledger.release(1, a.handle).unwrap();
+    ledger.begin_revoke();
+    ledger.get_mut(1, a.handle).unwrap().state = 3;
+    assert_eq!(ledger.finish_revoke().count(), 0);
+    assert_eq!(ledger.counters().unwrap().quarantined, 4096);
+    assert!(ledger.alloc(2, 4096, 4096).is_err());
+}
+
+#[test]
+fn full_ledger_and_handle_exhaustion_are_atomic() {
+    let mut ledger = Ledger::new();
+    ledger.capacity = (MAX_LEASES as u64 + 1) * 4096;
+    for owner in 0..MAX_LEASES {
+        ledger.alloc(owner as u64, 1, 4096).unwrap();
+    }
+    let before = ledger.counters().unwrap();
+    assert!(ledger.alloc(999, 1, 4096).is_err());
+    assert_eq!(ledger.counters().unwrap(), before);
+    for l in &mut ledger.leases {
+        l.state = 2;
+    }
+    ledger.begin_revoke();
+    assert_eq!(ledger.finish_revoke().count(), MAX_LEASES);
+    ledger.next_handle = (1 << 30) - 1;
+    ledger.alloc(1, 1, 4096).unwrap();
+    let before = ledger.counters().unwrap();
+    assert_eq!(ledger.alloc(2, 1, 4096).unwrap_err(), -75);
+    assert_eq!(ledger.counters().unwrap(), before);
+}
