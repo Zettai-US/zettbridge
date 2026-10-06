@@ -125,6 +125,14 @@ impl Device {
         OwnedBacking::reserve(self.core().pdev.as_ref().as_ref(), size, tier, node)
             .map_err(|e| e.to_errno())
     }
+    pub(crate) fn ats_test_buffer(self) -> Result<kernel::dma::CoherentAllocation<u8>> {
+        let dev = self.core().pdev.as_ref().as_ref();
+        // SAFETY: Called with the online State mutex held before publication;
+        // unbind needs the same mutex. The bound-device borrow never escapes;
+        // an uncertain completion may retain the buffer in quarantined backing.
+        let bound = unsafe { &*(raw_device(dev).cast::<device::Device<device::Bound>>()) };
+        kernel::dma::CoherentAllocation::alloc_coherent(bound, 4096, GFP_KERNEL)
+    }
 }
 // SAFETY: State's fields have no thread affinity; all access and raw-pointer
 // lifetime operations are serialized by Core.state. See docs/unsafe-audit.md.
@@ -162,6 +170,24 @@ pub(crate) fn check_dma(d: &device::Device<device::Core>) -> Result {
     }
 }
 pub(crate) struct PciPower(pub ARef<pci::Device>);
+pub(crate) fn check_ats(d: &pci::Device<device::Core>) -> Result {
+    // Intel IOMMU owns ATS enable/disable and the device-TLB invalidation
+    // bookkeeping. Calling pci_enable_ats ourselves would bypass that policy.
+    // SAFETY: Probe owns the live device. Read config through the PCI API.
+    unsafe {
+        let p = raw_pci(d);
+        let cap = bindings::pci_find_ext_capability(p, bindings::PCI_EXT_CAP_ID_ATS as _);
+        let mut ctrl = 0u16;
+        if cap == 0
+            || (*p).ats_enabled() == 0
+            || bindings::pci_read_config_word(p, cap as i32 + 6, &mut ctrl) != 0
+            || ctrl & 0x801f != 0x8000
+        {
+            return Err(ENODEV);
+        }
+    }
+    Ok(())
+}
 impl Drop for PciPower {
     fn drop(&mut self) {
         // SAFETY: Reference keeps pci_dev alive; all worker accesses stopped and
@@ -472,7 +498,8 @@ pub(crate) unsafe extern "C" fn zb_rs_show(
     // SAFETY: Class unregister waits for sysfs callbacks before Core is dropped.
     // Sysfs provides a PAGE_SIZE output buffer; render writes at most 64 bytes.
     let core = unsafe { &*owner.cast::<Core>() };
-    let stats = core.state.lock().stats(tier.max(0) as u32);
+    let state = core.state.lock();
+    let stats = state.stats(tier.max(0) as u32);
     let bytes = unsafe { core::slice::from_raw_parts_mut(buffer.cast::<u8>(), 64) };
-    crate::sysfs::render(&stats, tier, field, bytes) as isize
+    crate::sysfs::render(&stats, &state.ats, tier, field, bytes) as isize
 }

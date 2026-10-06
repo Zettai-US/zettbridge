@@ -153,10 +153,22 @@ impl pci::Driver for Bridge {
                 if !crate::capacity::valid_pool(s.capacity) {
                     return Err(EINVAL);
                 }
+                s.ats_required = provider && s.dev.read(0x368) & 1 != 0;
+                if s.ats_required {
+                    ffi::check_ats(pdev)?;
+                    if s.dev.read(0x368) != 7 {
+                        return Err(ENODEV);
+                    }
+                }
             }
             let active = Active::new(&core);
             let class = ffi::ClassDevice::new(&core, provider)?;
             let role = ffi::Role::new(&core, provider)?;
+            let ats_mode = if core.state.lock().dev.read(0x368) & 2 != 0 {
+                "enabled"
+            } else {
+                "disabled"
+            };
             let node_core = core.clone();
             Ok(try_pin_init!(Self {
                 _class: class,
@@ -166,7 +178,9 @@ impl pci::Driver for Bridge {
                 _power: power,
                 _node <- Node::new(node_core, provider),
                 _: {
-                    dev_info!(pdev, "Zettai RPU v0.2 native Rust {}, ATS disabled\n", if provider { "provider" } else { "consumer" });
+                    dev_info!(pdev, "Zettai RPU v0.2 native Rust {}, provider ATS {}\n",
+                        if provider { "provider" } else { "consumer" },
+                        ats_mode);
                 },
             }))
         })

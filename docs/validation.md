@@ -1,10 +1,35 @@
-# 双 QEMU 验证记录（2026-10-05）
+# 双 QEMU 验证记录（更新于 2026-10-06）
 
 实际使用 `~/linux`：SHA `40368e0702bb2c56932e9d91e617a33d76f1c267`，`7.0.0-mk3+`，Rust 1.93.1 / Clang 21.1.8 / bindgen 0.72.1。内核本来有本地修改，已在 deployment.json 保留 dirty 清单；本任务没有修改目标内核。QEMU 来源 `~/CXLMemSim/lib/qemu`，版本 10.0.94。
 
 原始日志、initramfs、模块二进制和运行时 PID/socket 保存在执行机器的 `artifacts/`，不随源码提交。本文记录已执行的结果；复现命令见 README，各次启动还会生成完整命令及二进制哈希的 `run.json`。
 
-## 8 GiB 扩容与持续运行（后续验证）
+## ATS 持续开启（2026-10-06）
+
+在下述 ATS 关闭基线上新增真实 ATS 请求、256 项设备翻译缓存、VT-d queued device invalidation、权限检查、RETIRE 清缓存和 Rust 状态监测。未修改目标内核。复现及运行接口见 [ats.md](ats.md)。
+
+| 检查 | 结果 / 证据 |
+| --- | --- |
+| Rust OOT / QEMU 构建 | 通过；`artifacts/ats-{driver,qemu}-build.log` |
+| Rust 核心与工具 / 固定 UAPI | 6 项核心检查通过，工具 `-Werror` 构建通过，32/64 位 UAPI 编译断言通过 |
+| QEMU ATS 定向测试 | 5 组通过：Root Port requester、非恒等地址翻译、cache hit、正确 SID 和范围的失效、remap/unmap、只读权限及权限降级、跨非连续物理页写入、Bus Master 关闭、ATS 中途关闭及正常 RETIRE；`artifacts/ats-qtest.log` |
+| 原管理 ABI | 通过；`artifacts/ats-baseline-qtest.log` |
+| 256 MiB ATS 开启 / 关闭 | 两个 Linux guest 均实际完成完整流程；`artifacts/ats-second/`、`artifacts/ats-off-regression/` |
+| 8 GiB ATS 开启 | 全范围 CPU→ATS DMA→CPU 校验及 8 个 1 GiB lease 跨窗采样、账本/释放/用量/最终回收通过；`artifacts/ats-8g-test/` |
+| 8 GiB 回收时 ATS 计数 | status=7、requests=6317712、hits=57266、invalidations=4、cached_entries=0、transitions=1、faults=0；保持 ATS 直到 unmap/free 完成 |
+| 临时 ATS 测试缓冲区 | 两轮真实 Linux coherent DMA map/read/cache hit/free/invalidation，通过后打印 `ATS_MAP_UNMAP_PASS` |
+| COMMIT ACK 丢失及 UNKNOWN | DONE 时恢复并完成全流程；UNKNOWN 时拒绝 RECLAIM 并保留 backing；`artifacts/ats-ack/`、`artifacts/ats-quarantine/` |
+| ATS 自测 ACK 丢失及 UNKNOWN | DONE 恢复；UNKNOWN 时保留尚有缓存的临时 DMA buffer，未发生 unmap/invalidation，RECLAIM 被拒绝；`artifacts/ats-probe-ack/`、`artifacts/ats-probe-quarantine/` |
+| PCI/FD/模块生命周期 | 两端 unbind、旧 FD ENODEV、close 后卸载及重新加载通过；`artifacts/ats-lifetime/` |
+| QEMU patch 检查 | `checkpatch --no-tree --no-signoff`：0 errors、0 warnings；`artifacts/ats-checkpatch.log` |
+| 持续实例 | `artifacts/live-8g-ats/`，provider RAM=12 GiB、consumer RAM=4 GiB、pool=8 GiB、heartbeat lease=128 MiB；仍留有 8064 MiB 可分配 |
+| 61 秒持续采样 | 13 次查询，report_seq 275→549，ATS hits 8134→8182，每次均 status=7、enabled=1、transitions=1、faults=0、usage_valid=1 且 age≤2 秒；`artifacts/live-8g-ats/ats-monitor.json` |
+
+ATS 版本的双 guest 正常及故障回归未出现 BUG / WARNING / Oops / kernel panic。qtest 中明确注入的无映射/权限错误是预期失败。现有旧的 ATS 关闭实例 `live-8g/` 在新版就绪后正常 release/drain/retire/reclaim 并退出；当前运行实例为 `live-8g-ats/`。
+
+以下保留原 ATS 关闭版本的历史验证记录；其中的“基线”与路径不代表当前 ATS 运行模式。
+
+## 8 GiB 扩容与持续运行（2026-10-05）
 
 当前模块已增加可配置 aperture，并重新用同一个 `~/linux` 内核验证。此前下表中的四组 `rust-final-*` 是重构基线记录；当前扩容版本的实测证据如下：
 

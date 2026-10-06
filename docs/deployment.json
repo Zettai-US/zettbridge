@@ -29,7 +29,8 @@
     "version": "10.0.94",
     "repository": "https://github.com/Zettai-US/qemu-cxl-type2",
     "branch": "codex/zettbridge-rust-v0.2",
-    "commit": "76716786b7926c8fd0922018094699d9b842de8f"
+    "commit": "616434b01cd6490c46167e1b8c1bc5a23d59bdb1",
+    "previous_commit": "76716786b7926c8fd0922018094699d9b842de8f"
   },
   "hardware": {
     "vendor": "1b36",
@@ -39,12 +40,21 @@
     "bar_bytes": 16384,
     "standard_cxl": "separate cxl-type3 device",
     "HDM": "configurable non-interleaved volatile region; validated 256 MiB and 8 GiB",
-    "backend": "kernel-owned DRAM pages on node 0; translated Intel IOMMU; ATS disabled",
+    "backend": "kernel-owned DRAM pages on node 0; translated Intel IOMMU; ATS enabled by default (--ats off baseline available)",
     "mapping": "x86 UC PFNMAP, exclusive DAX driver, 4-KiB leases",
     "no_payload_cache": true,
     "dma_bits": 64,
     "max_dma_segment_bytes": 2097152,
-    "max_extents": 65536
+    "max_extents": 65536,
+    "ats": {
+      "atc_entries": 256,
+      "atc_page_bytes": 4096,
+      "pasid": false,
+      "pri": false,
+      "sva": false,
+      "enable_owner": "Linux Intel IOMMU driver",
+      "invalidation": "VT-d queued device-IOTLB invalidation; requester scoped"
+    }
   },
   "limits": {
     "lease_alignment": 4096,
@@ -78,24 +88,35 @@
       "SGTable"
     ],
     "c_boundary": "stateless inline/macro wrappers, private DAX descriptors, AER/PM forwarding and sysfs declarations",
-    "module_sha256": "3e630f6c8c577ffad430156533fa38cec081ed26f2b1b3ae56a7a6504e25b2e1",
+    "module_sha256": "4defeaf7e448f1a4ab5425c2acf7f85f5bdc525a6bc1cd611ddc9672de539c87",
     "previous_validation_runs": [
       "rust-final-normal",
       "rust-final-ack",
       "rust-final-quarantine",
-      "rust-final-lifetime"
-    ],
-    "validation_runs": [
+      "rust-final-lifetime",
       "memory8g-test",
       "live-control-test",
       "live-8g"
+    ],
+    "validation_runs": [
+      "ats-second",
+      "ats-8g-test",
+      "ats-off-regression",
+      "ats-lifetime",
+      "ats-ack",
+      "ats-quarantine",
+      "ats-probe-ack",
+      "ats-probe-quarantine",
+      "live-8g-ats"
     ]
   },
   "live_configuration": {
-    "path": "/root/zettbridge/artifacts/live-8g",
+    "path": "/root/zettbridge/artifacts/live-8g-ats",
     "export_bytes": 8589934592,
     "provider_ram_bytes": 12884901888,
     "consumer_ram_bytes": 4294967296,
-    "heartbeat_lease_bytes": 134217728
+    "heartbeat_lease_bytes": 134217728,
+    "ats": "on",
+    "verification": "ats_enabled=1, status=7, transitions=1, faults=0; 61 second continuous usage and ATC hit monitoring"
   }
 }

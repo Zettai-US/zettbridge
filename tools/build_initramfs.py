@@ -35,7 +35,7 @@ mount -t tmpfs tmpfs /tmp
 role=consumer
 mode=test
 capacity=268435456
-for x in $(cat /proc/cmdline); do case "$x" in zb.role=*) role=${x#zb.role=};; zb.quarantine=1) mode=quarantine-test;; zb.lifetime=1) mode=lifetime;; zb.live=1) mode=serve;; zb.capacity=*) capacity=${x#zb.capacity=};; esac; done
+for x in $(cat /proc/cmdline); do case "$x" in zb.role=*) role=${x#zb.role=};; zb.quarantine=1) mode=quarantine-test;; zb.ats_quarantine=1) mode=ats-quarantine-test;; zb.lifetime=1) mode=lifetime;; zb.live=1) mode=serve;; zb.capacity=*) capacity=${x#zb.capacity=};; esac; done
 echo "ZB_BOOT role=$role"
 uname -a
 fail() { echo "ZB_GUEST_FAIL $role"; dmesg | tail -80; poweroff -f; }

@@ -20,6 +20,24 @@ _Static_assert(sizeof(struct zb_request) == 64, "request ABI");
 _Static_assert(sizeof(struct zb_stats) == 256, "stats ABI");
 static uint64_t pool_bytes;
 static bool live;
+static bool ats_required;
+static bool ats_test_quarantine;
+static void die(const char *s);
+
+static uint64_t ats_field(const char *field) {
+  char path[160];
+  snprintf(path, sizeof(path), "/sys/class/rpu/rpu0/ats_%s", field);
+  FILE *file = fopen(path, "r");
+  if (!file)
+    die("ATS sysfs");
+  uint64_t value;
+  if (fscanf(file, "%" SCNu64, &value) != 1) {
+    fclose(file);
+    die("ATS counter");
+  }
+  fclose(file);
+  return value;
+}
 
 static void die(const char *s) {
   perror(s);
@@ -30,6 +48,29 @@ static void check(bool b, const char *s) {
     fprintf(stderr, "FAIL %s\n", s);
     exit(1);
   }
+}
+static void verify_ats(bool retired) {
+  if (!ats_required)
+    return;
+  for (unsigned i = 0; i < 30; i++) {
+    if (ats_field("hits") && ats_field("invalidations") >= 2 &&
+        (!retired || !ats_field("cached_entries")))
+      break;
+    usleep(100000);
+  }
+  check(ats_field("status") == 7 && ats_field("enabled") == 1,
+        "provider ATS remains enabled with invalidation notifier");
+  check(ats_field("transitions") == 1, "ATS never toggled during mapping lifetime");
+  check(ats_field("requests") && ats_field("hits") &&
+            ats_field("invalidations") >= 2 && !ats_field("faults"),
+        "ATS translation, cache hit and Linux invalidation counters");
+  check(!retired || !ats_field("cached_entries"), "retire leaves no cached translation");
+  printf("ATS_CONTINUOUS_PASS status=%" PRIu64 " requests=%" PRIu64
+         " hits=%" PRIu64 " invalidations=%" PRIu64 " entries=%" PRIu64
+         " transitions=%" PRIu64 " retired=%d\n", ats_field("status"),
+         ats_field("requests"), ats_field("hits"), ats_field("invalidations"),
+         ats_field("cached_entries"), ats_field("transitions"), retired);
+  fflush(stdout);
 }
 static void call(int fd, unsigned long op, void *r) {
   if (ioctl(fd, op, r))
@@ -82,8 +123,27 @@ static void provider(int fd, bool quarantine) {
   r = req(2, 0, 1);
   puts("PROVIDER PREPARE_START");
   fflush(stdout);
+  if (ats_test_quarantine) {
+    check(ioctl(fd, ZB_IOC_PREPARE, &r) < 0 && errno == ETIMEDOUT,
+          "ambiguous ATS test timeout");
+    struct zb_stats s = stats(fd);
+    show(s);
+    check(s.provider_state == 6 && s.reserved_bytes == pool_bytes &&
+              !s.dma_mapped && s.quarantined_backing == pool_bytes,
+          "ATS test retains backing and temporary coherent buffer");
+    r = req(4, s.epoch, 1);
+    check(ioctl(fd, ZB_IOC_RECLAIM, &r) < 0 && errno == EBUSY,
+          "ATS uncertain completion denies reclaim");
+    usleep(200000);
+    check(ats_field("enabled") && ats_field("cached_entries") == 1 &&
+              !ats_field("invalidations"),
+          "temporary ATS mapping survives ambiguous completion");
+    puts("PROVIDER QUARANTINE_PASS ATS temporary buffer retained");
+    return;
+  }
   call(fd, ZB_IOC_PREPARE, &r);
   puts("PROVIDER DMA_FULL_RANGE_PASS");
+  verify_ats(false);
   fflush(stdout);
   r = req(3, 0, 1);
   if (quarantine) {
@@ -114,6 +174,7 @@ static void provider(int fd, bool quarantine) {
       struct zb_stats s = stats(fd);
       check(s.provider_state == 3, "live provider remains active");
       show(s);
+      verify_ats(false);
       sleep(5);
     }
   } else {
@@ -146,6 +207,7 @@ static void provider(int fd, bool quarantine) {
   show(s);
   check(!s.reserved_bytes && !s.dma_mapped && !s.exported,
         "provider reclaimed");
+  verify_ats(true);
   puts(live ? "PROVIDER STOPPED" : "PROVIDER PASS");
 }
 struct stress_arg {
@@ -455,6 +517,14 @@ int main(int argc, char **argv) {
     return 2;
   }
   live = strstr(argv[1], "serve") != NULL;
+  ats_test_quarantine = strstr(argv[1], "ats-quarantine") != NULL;
+  FILE *cmdline = fopen("/proc/cmdline", "r");
+  char boot_args[4096];
+  if (cmdline) {
+    if (fgets(boot_args, sizeof(boot_args), cmdline))
+      ats_required = strstr(boot_args, "zb.ats=on") != NULL;
+    fclose(cmdline);
+  }
   bool prov = !strncmp(argv[1], "provider", 8);
   int fd = open(prov ? "/dev/rpu_provider0" : "/dev/rpu_consumer0", O_RDWR);
   if (fd < 0)

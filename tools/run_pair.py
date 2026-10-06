@@ -28,21 +28,29 @@ def main():
     parser.add_argument("--output")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--accel", choices=["kvm", "tcg"], default="kvm")
+    parser.add_argument("--ats", choices=["on", "off"], default="on",
+                        help="keep provider ATS enabled (default), or run the original baseline")
     parser.add_argument("--capacity", type=memory_size, default=256 * MIB)
     parser.add_argument("--provider-memory", type=memory_size)
     parser.add_argument("--consumer-memory", type=memory_size, default=2 * GIB)
     parser.add_argument("--keep-running", action="store_true",
                         help="leave the pool active, with serial console and QMP sockets")
     parser.add_argument("--drop-commit-ack", action="store_true")
+    parser.add_argument("--drop-ats-test-ack", action="store_true",
+                        help="exercise completion loss for the temporary ATS test buffer")
     parser.add_argument("--query-unknown", action="store_true")
     parser.add_argument("--lifetime", action="store_true")
     args = parser.parse_args()
     if not 256 * MIB <= args.capacity <= 64 * GIB or args.capacity & (args.capacity - 1):
         parser.error("--capacity must be a power of two from 256M through 64G")
-    if args.lifetime and args.drop_commit_ack:
+    if args.drop_commit_ack and args.drop_ats_test_ack:
+        parser.error("choose only one completion-loss injection")
+    if args.drop_ats_test_ack and args.ats != "on":
+        parser.error("--drop-ats-test-ack requires --ats on")
+    if args.lifetime and (args.drop_commit_ack or args.drop_ats_test_ack):
         parser.error("--lifetime cannot inject commit faults")
-    if args.query_unknown and not args.drop_commit_ack:
-        parser.error("--query-unknown requires --drop-commit-ack")
+    if args.query_unknown and not (args.drop_commit_ack or args.drop_ats_test_ack):
+        parser.error("--query-unknown requires a completion-loss injection")
     if args.keep_running and (args.lifetime or args.query_unknown):
         parser.error("--keep-running requires a working data path")
     provider_ram = args.provider_memory or max(2 * GIB, (args.capacity * 3 // 2 + GIB - 1) // GIB * GIB)
@@ -65,12 +73,14 @@ def main():
               "-cpu", "host,hypervisor=off" if args.accel == "kvm" else "max,hypervisor=off",
               "-smp", "2", "-nodefaults", "-nographic", "-no-reboot", "-monitor", "none",
               "-kernel", str(pathlib.Path(args.kernel) / "arch/x86/boot/bzImage"),
-              "-initrd", str(initrd), "-device", "intel-iommu,intremap=on,caching-mode=on,aw-bits=48",
+              "-initrd", str(initrd), "-device",
+              f"intel-iommu,intremap=on,caching-mode=on,aw-bits=48,device-iotlb={args.ats}",
               "-device", "pcie-root-port,id=mgmt,bus=pcie.0,chassis=1,slot=1"]
     manifest = {
         "commands": {}, "pids": {}, "capacity_bytes": args.capacity,
         "provider_ram_bytes": provider_ram, "consumer_ram_bytes": args.consumer_memory,
         "keep_running": args.keep_running, "status": "starting",
+        "ats": args.ats,
         "kernel_sha": subprocess.check_output(["git", "-C", args.kernel, "rev-parse", "HEAD"], text=True).strip(),
         "kernel_release": (pathlib.Path(args.kernel) / "include/config/kernel.release").read_text().strip(),
         "driver_implementation": "native Rust OOT with stateless kernel helpers",
@@ -95,6 +105,10 @@ def main():
                        f"socket={out / 'bridge.sock'},capacity={args.capacity},timeout-ms={ipc_timeout}")
             if role == "provider" and args.drop_commit_ack:
                 options += ",x-drop-ack-op=512"
+            if role == "provider" and args.drop_ats_test_ack:
+                options += ",x-drop-ack-op=261"
+            if role == "provider":
+                options += f",ats={args.ats}"
             if role == "provider" and args.query_unknown:
                 options += ",x-query-unknown=on"
             cmd = common + [
@@ -104,7 +118,9 @@ def main():
                             "iommu.strict=1 module.sig_enforce=0 "
                             f"zb.role={role} zb.capacity={args.capacity} "
                             f"zb.quarantine={int(args.query_unknown and role == 'provider')} "
-                            f"zb.lifetime={int(args.lifetime)} zb.live={int(args.keep_running)}"),
+                            f"zb.lifetime={int(args.lifetime)} zb.live={int(args.keep_running)} "
+                            f"zb.ats_quarantine={int(args.query_unknown and args.drop_ats_test_ack and role == 'provider')} "
+                            f"zb.ats={args.ats}"),
                 "-chardev", (f"socket,id=serial,path={out / (role + '.console')},server=on,wait=off,"
                              f"logfile={out / (role + '.log')}"), "-serial", "chardev:serial",
                 "-qmp", f"unix:{out / (role + '.qmp')},server=on,wait=off",

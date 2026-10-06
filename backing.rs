@@ -25,6 +25,8 @@ struct Backing {
     mapped: bool,
     segments: KVVec<(u64, u64)>,
     table: Option<CoherentAllocation<u8>>,
+    // Retained if a pre-publication ATS test completion becomes ambiguous.
+    ats_probe: Option<CoherentAllocation<u8>>,
 }
 impl Drop for Backing {
     fn drop(&mut self) {
@@ -55,6 +57,7 @@ impl OwnedBacking {
                 mapped: false,
                 segments: KVVec::new(),
                 table: None,
+                ats_probe: None,
             },
             GFP_KERNEL,
         )?;
@@ -92,6 +95,9 @@ impl OwnedBacking {
     }
     pub(crate) fn present(&self) -> bool {
         !self.0.is_null()
+    }
+    pub(crate) fn quarantine_probe(&mut self, probe: CoherentAllocation<u8>) {
+        self.get_mut().ats_probe = Some(probe);
     }
     pub(crate) fn free(&mut self) {
         if self.present() {

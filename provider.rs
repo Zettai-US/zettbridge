@@ -79,6 +79,9 @@ impl State {
         }
     }
     fn prepare(&mut self) -> Result<(), i32> {
+        if self.ats_required {
+            self.ats_selftest()?;
+        }
         let n = self.backing.map()?;
         self.mapped = self.reserved;
         if n == 0 || n as u64 > extent::MAX_EXTENTS {
@@ -100,6 +103,52 @@ impl State {
         self.command(epoch, 0x102)?;
         self.backing.verify()?;
         self.state = 1;
+        Ok(())
+    }
+    fn ats_selftest(&mut self) -> Result<(), i32> {
+        // Exercise real Linux DMA allocation/unmapping, not a software-only
+        // cache flush. ATS remains enabled across both mapping lifetimes.
+        for generation in 1..=2u64 {
+            let mut buffer = self.dev.ats_test_buffer().map_err(|e| e.to_errno())?;
+            let expected = 0x5a42_4154_5300_0000 | generation;
+            // SAFETY: CPU owns this coherent test buffer; no command is active.
+            unsafe { buffer.write(&expected.to_le_bytes(), 0) }.map_err(|e| e.to_errno())?;
+            self.dev.write64(0x30, buffer.dma_handle());
+            if let Err(error) = self.command(self.epoch, 0x105) {
+                if self.transport.uncertain {
+                    self.backing.quarantine_probe(buffer);
+                }
+                return Err(error);
+            }
+            if self.dev.read64(0x3a8) != expected {
+                return Err(-5);
+            }
+            let requests = self.dev.read64(0x370);
+            let hits = self.dev.read64(0x378);
+            if let Err(error) = self.command(self.epoch, 0x105) {
+                if self.transport.uncertain {
+                    self.backing.quarantine_probe(buffer);
+                }
+                return Err(error);
+            }
+            if self.dev.read64(0x3a8) != expected
+                || self.dev.read64(0x370) != requests
+                || self.dev.read64(0x378) <= hits
+            {
+                return Err(-5);
+            }
+            let invalidations = self.dev.read64(0x380);
+            // Positive synchronous completion proves the device has finished
+            // reading; strict dma_free_coherent must invalidate its cached IOVA.
+            drop(buffer);
+            if self.dev.read(0x368) != 7
+                || self.dev.read64(0x380) <= invalidations
+                || self.dev.read64(0x388) != 0
+            {
+                return Err(-5);
+            }
+        }
+        kernel::pr_info!("zettbridge: ATS_MAP_UNMAP_PASS (enabled throughout)\n");
         Ok(())
     }
     pub(crate) fn provider_tick(&mut self) {

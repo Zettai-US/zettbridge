@@ -33,6 +33,8 @@ struct State {
     dev: Device,
     capacity: u64,
     provider: bool,
+    ats_required: bool,
+    ats: [u64; 8],
     online: bool,
     owner_seq: u64,
     mapping: *mut kernel::bindings::address_space,
@@ -134,6 +136,15 @@ impl State {
         result
     }
     fn tick(&mut self, revoked: bool) -> i32 {
+        // Both functions expose Host B's ATS counters; sysfs reads this cached
+        // snapshot without issuing MMIO. Once selected, ATS is mandatory for
+        // the provider's complete mapping lifetime, including reclamation.
+        for i in 0..self.ats.len() {
+            self.ats[i] = self.dev.read64(0x368 + i as u32 * 8);
+        }
+        if self.ats_required && self.ats[0] != 7 {
+            self.fault();
+        }
         if self.state == 6 {
             if revoked {
                 self.revoke_pending = false;

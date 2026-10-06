@@ -64,7 +64,13 @@ impl State {
 }
 
 /// Format an atomic Rust snapshot into a bounded sysfs buffer.
-pub(crate) fn render(s: &crate::uapi::Stats, tier: i32, field: i32, out: &mut [u8]) -> usize {
+pub(crate) fn render(
+    s: &crate::uapi::Stats,
+    ats: &[u64; 8],
+    tier: i32,
+    field: i32,
+    out: &mut [u8],
+) -> usize {
     use core::fmt::Write;
     struct Buffer<'a> {
         bytes: &'a mut [u8],
@@ -105,6 +111,8 @@ pub(crate) fn render(s: &crate::uapi::Stats, tier: i32, field: i32, out: &mut [u
             2 => s.seq,
             3 => u64::from(s.flags & 16 != 0),
             4 => u64::from(s.flags & 2 != 0),
+            6..=13 => ats[(field - 6) as usize],
+            14 => u64::from(ats[0] & 2 != 0),
             _ if s.report_seq == 0 => {
                 let _ = b.write_str("unknown\n");
                 return b.len;

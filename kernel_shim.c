@@ -136,6 +136,15 @@ A(stats_seq, -1, 2);
 A(allocatable, -1, 3);
 A(usage_valid, -1, 4);
 A(usage_age_ns, -1, 5);
+A(ats_status, -1, 6);
+A(ats_requests, -1, 7);
+A(ats_hits, -1, 8);
+A(ats_invalidations, -1, 9);
+A(ats_cached_entries, -1, 10);
+A(ats_flushes, -1, 11);
+A(ats_faults, -1, 12);
+A(ats_transitions, -1, 13);
+A(ats_enabled, -1, 14);
 #define T(n, f)                                                                \
   static struct zb_attr dram_##n = {__ATTR(n, 0444, zb_show, NULL), 0, f};     \
   static struct zb_attr cxl_##n = {__ATTR(n, 0444, zb_show, NULL), 1, f}
@@ -158,6 +167,15 @@ static struct attribute *root_attrs[] = {&a_state.attr.attr,
                                          &a_allocatable.attr.attr,
                                          &a_usage_valid.attr.attr,
                                          &a_usage_age_ns.attr.attr,
+                                         &a_ats_status.attr.attr,
+                                         &a_ats_requests.attr.attr,
+                                         &a_ats_hits.attr.attr,
+                                         &a_ats_invalidations.attr.attr,
+                                         &a_ats_cached_entries.attr.attr,
+                                         &a_ats_flushes.attr.attr,
+                                         &a_ats_faults.attr.attr,
+                                         &a_ats_transitions.attr.attr,
+                                         &a_ats_enabled.attr.attr,
                                          NULL};
 #define TA(t)                                                                  \
   &t##_installed_bytes.attr.attr, &t##_reserved_bytes.attr.attr,               \
