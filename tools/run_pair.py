@@ -24,12 +24,23 @@ def memory_size(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qemu", default="/root/CXLMemSim/lib/qemu/build/qemu-system-x86_64")
-    parser.add_argument("--kernel", default="/root/linux")
+    parser.add_argument("--kernel", type=pathlib.Path, default=pathlib.Path("/root/linux"),
+                        help="default kernel tree for both guests")
+    parser.add_argument("--provider-kernel", type=pathlib.Path,
+                        help="override the provider guest kernel tree")
+    parser.add_argument("--consumer-kernel", type=pathlib.Path,
+                        help="override the consumer guest kernel tree")
+    parser.add_argument("--provider-module", type=pathlib.Path,
+                        help="zettbridge.ko built for the provider kernel")
+    parser.add_argument("--consumer-module", type=pathlib.Path,
+                        help="zettbridge.ko built for the consumer kernel")
     parser.add_argument("--output")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--accel", choices=["kvm", "tcg"], default="kvm")
     parser.add_argument("--ats", choices=["on", "off"], default="on",
                         help="keep provider ATS enabled (default), or run the original baseline")
+    parser.add_argument("--transport", choices=["native", "vfio-user-cxl"], default="native",
+                        help="bridge transport between QEMU guests")
     parser.add_argument("--capacity", type=memory_size, default=256 * MIB)
     parser.add_argument("--provider-memory", type=memory_size)
     parser.add_argument("--consumer-memory", type=memory_size, default=2 * GIB)
@@ -65,21 +76,57 @@ def main():
     if min(provider_ram, args.consumer_memory) % MIB or args.consumer_memory < GIB:
         parser.error("guest RAM must be MiB aligned; consumer needs at least 1G")
     repo = pathlib.Path(__file__).resolve().parents[1]
+    kernels = {role: (getattr(args, f"{role}_kernel") or args.kernel).resolve()
+               for role in ("provider", "consumer")}
+    modules = {role: (getattr(args, f"{role}_module") or repo / "zettbridge.ko").resolve()
+               for role in ("provider", "consumer")}
+    if kernels["provider"] != kernels["consumer"]:
+        for role in ("provider", "consumer"):
+            if getattr(args, f"{role}_module") is None:
+                parser.error(f"--{role}-module is required when guest kernel trees differ")
+    for role in ("provider", "consumer"):
+        kernel = kernels[role]
+        module = modules[role]
+        if not (kernel / "arch/x86/boot/bzImage").is_file():
+            parser.error(f"{role} kernel has no built arch/x86/boot/bzImage: {kernel}")
+        if not (kernel / "include/config/kernel.release").is_file():
+            parser.error(f"{role} kernel has no include/config/kernel.release: {kernel}")
+        if not module.is_file():
+            parser.error(f"{role} module does not exist: {module}")
+        release = (kernel / "include/config/kernel.release").read_text().strip()
+        try:
+            vermagic = subprocess.check_output(
+                ["modinfo", "-F", "vermagic", str(module)], text=True,
+                stderr=subprocess.DEVNULL).split()
+        except (OSError, subprocess.CalledProcessError):
+            parser.error(f"cannot read {role} module vermagic: {module}")
+        if not vermagic or vermagic[0] != release:
+            parser.error(f"{role} module vermagic does not match kernel {release}: {module}")
     out = pathlib.Path(args.output or tempfile.mkdtemp(prefix="zettbridge-pair-")).resolve()
     out.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if (out / "run.json").exists() or (out / "bridge.sock").exists():
+    if ((out / "run.json").exists() or (out / "bridge.sock").exists() or
+            (out / "vfio-user-cxl.sock").exists()):
         parser.error("use a fresh output directory")
     if len(os.fsencode(out / "consumer.console")) >= 108:
         parser.error("output path is too long for Unix sockets")
     os.umask(0o077)
-    initrd = out / "initramfs.cpio.gz"
-    subprocess.run(["python3", str(repo / "tools/build_initramfs.py"), "--kernel", args.kernel,
-                    "--output", str(initrd)], check=True)
+    initrds = {}
+    same_guest_build = (kernels["provider"] == kernels["consumer"] and
+                        modules["provider"] == modules["consumer"])
+    for role in ("provider", "consumer"):
+        if role == "consumer" and same_guest_build:
+            initrds[role] = initrds["provider"]
+            continue
+        initrd = out / ("initramfs.cpio.gz" if same_guest_build else
+                        f"{role}.initramfs.cpio.gz")
+        subprocess.run(["python3", str(repo / "tools/build_initramfs.py"),
+                        "--kernel", str(kernels[role]), "--module", str(modules[role]),
+                        "--output", str(initrd)], check=True)
+        initrds[role] = initrd
     common = [args.qemu, "-machine", "q35,cxl=on,kernel-irqchip=split", "-accel", args.accel,
               "-cpu", "host,hypervisor=off" if args.accel == "kvm" else "max,hypervisor=off",
               "-smp", "2", "-nodefaults", "-nographic", "-no-reboot", "-monitor", "none",
-              "-kernel", str(pathlib.Path(args.kernel) / "arch/x86/boot/bzImage"),
-              "-initrd", str(initrd), "-device",
+              "-device",
               f"intel-iommu,intremap=on,caching-mode=on,aw-bits=48,device-iotlb={args.ats}",
               "-device", "pcie-root-port,id=mgmt,bus=pcie.0,chassis=1,slot=1"]
     manifest = {
@@ -87,20 +134,42 @@ def main():
         "provider_ram_bytes": provider_ram, "consumer_ram_bytes": args.consumer_memory,
         "keep_running": args.keep_running, "status": "starting",
         "ats": args.ats,
+        "transport": args.transport,
         "consumer_disk": str(args.consumer_disk) if args.consumer_disk else None,
-        "kernel_sha": subprocess.check_output(["git", "-C", args.kernel, "rev-parse", "HEAD"], text=True).strip(),
-        "kernel_release": (pathlib.Path(args.kernel) / "include/config/kernel.release").read_text().strip(),
+        "kernels": {},
         "driver_implementation": "native Rust OOT with stateless kernel helpers",
     }
-    for key, path in [("module", repo / "zettbridge.ko"), ("qemu", pathlib.Path(args.qemu)),
-                      ("kernel_image", pathlib.Path(args.kernel) / "arch/x86/boot/bzImage")]:
+    for role in ("provider", "consumer"):
+        kernel = kernels[role]
+        manifest["kernels"][role] = {
+            "tree": str(kernel),
+            "release": (kernel / "include/config/kernel.release").read_text().strip(),
+            "sha": subprocess.check_output(["git", "-C", str(kernel), "rev-parse", "HEAD"], text=True).strip(),
+            "module": str(modules[role]),
+        }
+        for key, path in [("module_sha256", modules[role]),
+                          ("image_sha256", kernel / "arch/x86/boot/bzImage")]:
+            with path.open("rb") as binary:
+                manifest["kernels"][role][key] = hashlib.file_digest(binary, "sha256").hexdigest()
+    if same_guest_build:
+        guest = manifest["kernels"]["provider"]
+        manifest["kernel_sha"] = guest["sha"]
+        manifest["kernel_release"] = guest["release"]
+        manifest["module_sha256"] = guest["module_sha256"]
+        manifest["kernel_image_sha256"] = guest["image_sha256"]
+    for key, path in [("qemu", pathlib.Path(args.qemu))]:
         with path.open("rb") as binary:
             manifest[key + "_sha256"] = hashlib.file_digest(binary, "sha256").hexdigest()
+    if args.transport == "vfio-user-cxl":
+        with (repo / "tools/vfio_user_cxl_backend.py").open("rb") as backend_source:
+            manifest["backend_sha256"] = hashlib.file_digest(backend_source, "sha256").hexdigest()
 
     def save_manifest():
         (out / "run.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     processes, files = [], []
+    qemu_processes = []
+    backend = None
     leave_running = False
     try:
         for role in ["provider", "consumer"]:
@@ -108,8 +177,12 @@ def main():
             # Capacity and zero/test commands execute synchronously in this model.
             # Large-range DMA can block the peer's management RPC during startup.
             ipc_timeout = 30000 if args.capacity > 256 * MIB else 2000
+            bridge_socket = out / ("vfio-user-cxl.sock" if role == "consumer" and
+                                   args.transport == "vfio-user-cxl" else "bridge.sock")
             options = (f"zettbridge,id=rpu,bus=mgmt,provider={'on' if role == 'provider' else 'off'},"
-                       f"socket={out / 'bridge.sock'},capacity={args.capacity},timeout-ms={ipc_timeout}")
+                       f"socket={bridge_socket},capacity={args.capacity},timeout-ms={ipc_timeout}")
+            if role == "consumer" and args.transport == "vfio-user-cxl":
+                options += ",vfio-user-cxl=on"
             if role == "provider" and args.drop_commit_ack:
                 options += ",x-drop-ack-op=512"
             if role == "provider" and args.drop_ats_test_ack:
@@ -119,6 +192,8 @@ def main():
             if role == "provider" and args.query_unknown:
                 options += ",x-query-unknown=on"
             cmd = common + [
+                "-kernel", str(kernels[role] / "arch/x86/boot/bzImage"),
+                "-initrd", str(initrds[role]),
                 "-m", f"{memory // MIB}M,maxmem={(memory + max(2 * GIB, args.capacity)) // MIB}M,slots=4",
                 "-device", options,
                 "-append", ("console=ttyS0 earlyprintk=serial panic=-1 nokaslr intel_iommu=on "
@@ -150,6 +225,7 @@ def main():
             proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log,
                                     stderr=subprocess.STDOUT, env=env, start_new_session=True)
             processes.append(proc)
+            qemu_processes.append(proc)
             manifest["pids"][role] = proc.pid
             save_manifest()
             if role == "provider":
@@ -161,6 +237,29 @@ def main():
                     time.sleep(0.05)
                 else:
                     raise TimeoutError("provider socket did not appear")
+                if args.transport == "vfio-user-cxl":
+                    backend_cmd = ["python3", str(repo / "tools/vfio_user_cxl_backend.py"),
+                                   "--socket-path", str(out / "vfio-user-cxl.sock"),
+                                   "--provider-socket", str(out / "bridge.sock"),
+                                   "--capacity", str(args.capacity),
+                                   "--timeout-ms", str(ipc_timeout)]
+                    manifest["backend_command"] = backend_cmd
+                    backend_log = open(out / "vfio-user-cxl.log", "w")
+                    files.append(backend_log)
+                    backend = subprocess.Popen(backend_cmd, stdin=subprocess.DEVNULL,
+                                               stdout=backend_log, stderr=subprocess.STDOUT,
+                                               start_new_session=True)
+                    processes.append(backend)
+                    manifest["pids"]["vfio_user_backend"] = backend.pid
+                    save_manifest()
+                    for _ in range(200):
+                        if (out / "vfio-user-cxl.sock").exists():
+                            break
+                        if backend.poll() is not None:
+                            raise RuntimeError("vfio-user CXL backend failed; see vfio-user-cxl.log")
+                        time.sleep(0.05)
+                    else:
+                        raise TimeoutError("vfio-user CXL backend socket did not appear")
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline:
             logs = [(out / f"{role}.log").read_text(errors="replace")
@@ -168,8 +267,10 @@ def main():
             if any(any(marker in log for marker in ["ZB_GUEST_FAIL", "Kernel panic", "BUG:", "Oops:", "FAIL "])
                    for log in logs):
                 raise RuntimeError("guest failure; see serial logs")
-            if any(proc.poll() is not None for proc in processes):
+            if any(proc.poll() is not None for proc in qemu_processes):
                 raise RuntimeError("QEMU exited before readiness; see serial and .qemu.log files")
+            if backend is not None and backend.poll() is not None and "ZB_GUEST_PASS consumer" not in logs[1]:
+                raise RuntimeError("vfio-user CXL backend exited; see vfio-user-cxl.log")
             if args.keep_running:
                 # printk can interrupt a userspace serial write mid-marker.
                 # Retain raw logs for fault checks; strip only timestamped
@@ -197,10 +298,10 @@ def main():
         raise
     finally:
         if not leave_running:
-            for proc in processes:
+            for proc in reversed(processes):
                 if proc.poll() is None:
                     proc.terminate()
-            for proc in processes:
+            for proc in reversed(processes):
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
