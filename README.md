@@ -28,7 +28,9 @@ ninja -C ~/CXLMemSim/lib/qemu/build qemu-system-x86_64 -j 12
 python3 tools/run_pair.py --output /tmp/zettbridge-normal
 ```
 
-脚本构建一次性 initramfs，依次启动 Host B 和 Host A 两个 QEMU。默认每台分配 2 GiB RAM / 2 vCPU，使用 `~/linux/arch/x86/boot/bzImage`。测试模式只清理自己启动的进程，不修改磁盘镜像、不在宿主机加载模块。输出目录需要是新的目录；成功后打印 `PAIR PASS`，保留两端 serial log、initramfs 和准确启动命令 `run.json`。
+脚本构建一次性 initramfs，依次启动 Host B 和 Host A 两个 QEMU。默认每台分配 2 GiB RAM / 2 vCPU，使用 `~/linux/arch/x86/boot/bzImage`。如需不同内核，分别指定 `--provider-kernel`、`--consumer-kernel` 以及各自已编译的 `--provider-module`、`--consumer-module`；启动前会检查模块 vermagic，且两端使用独立 initramfs。测试模式只清理自己启动的进程，不修改磁盘镜像、不在宿主机加载模块。输出目录需要是新的目录；成功后打印 `PAIR PASS`，保留两端 serial log、initramfs 和准确启动命令 `run.json`。`run.json` 的 `kernels.provider` / `kernels.consumer` 记录各自源码提交、版本与二进制校验和。
+
+可选 `--transport vfio-user-cxl` 启动独立的 `tools/vfio_user_cxl_backend.py`。Consumer QEMU 用 vfio-user BAR region 消息和已协商的私有 CXL.mem 命令访问后端；后端将请求中继到 Provider QEMU，后者仍持有真实 requester / IOMMU / ATS 模型。此功能是针对 Zettbridge 的 vfio-user 扩展，不是通用的 vfio-user CXL Type 3 设备。运行记录在 `run.json` 保存后端命令、PID 和 transport。
 
 扩大内存并保持两台 VM 运行：
 

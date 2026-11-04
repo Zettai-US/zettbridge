@@ -2,7 +2,9 @@
 """Build an isolated test initramfs from the pinned kernel and this module."""
 import argparse, os, pathlib, re, shutil, subprocess, tempfile
 p=argparse.ArgumentParser();p.add_argument('--kernel',default='/root/linux');p.add_argument('--output',required=True)
+p.add_argument('--module',type=pathlib.Path,help='zettbridge.ko built for this kernel')
 a=p.parse_args();kernel=pathlib.Path(a.kernel);repo=pathlib.Path(__file__).resolve().parents[1]
+module=a.module or repo/'zettbridge.ko'
 def copy(root,src,dest=None):
  src=pathlib.Path(src);dest=root/str(dest or src).lstrip('/');dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dest);shutil.copymode(src,dest)
 with tempfile.TemporaryDirectory(prefix='zettbridge-initrd-') as tmp:
@@ -10,7 +12,7 @@ with tempfile.TemporaryDirectory(prefix='zettbridge-initrd-') as tmp:
  for d in ['bin','sbin','dev','proc','sys','tmp','run','modules']: (root/d).mkdir(parents=True,exist_ok=True)
  copy(root,'/usr/bin/busybox','bin/busybox')
  for app in ['sh','mount','mkdir','sleep','cat','echo','insmod','rmmod','poweroff','dmesg','ls','grep','awk','sed','uname','touch','ps','kill','free']:(root/'bin'/app).symlink_to('busybox')
- copy(root,repo/'tools/zbctl','bin/zbctl');copy(root,repo/'zettbridge.ko','modules/zettbridge.ko')
+ copy(root,repo/'tools/zbctl','bin/zbctl');copy(root,module,'modules/zettbridge.ko')
  copy(root,'/usr/bin/cxl','bin/cxl')
  for lib in re.findall(r'(?:=>\s*)?(/[^\s]+)',subprocess.check_output(['ldd','/usr/bin/cxl'],text=True)):
   copy(root,lib)
